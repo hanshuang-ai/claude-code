@@ -21,44 +21,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Filter candidate issues
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Get issues updated in last 3 days with bug label
-          THREE_DAYS_AGO=$(date -u -d '3 days ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-3d '+%Y-%m-%dT%H:%M:%SZ')
-
-          echo "Fetching issues updated since $THREE_DAYS_AGO..."
-
-          # Fetch issues and filter for bugs with 5+ engagement
-          gh issue list \
-            --repo ${{ github.repository }} \
-            --state open \
-            --limit 5000 \
-            --json number,title,labels,updatedAt,comments,reactionGroups \
-            --search "updated:>=$THREE_DAYS_AGO" | \
-          jq -r '
-            .[] |
-            select(
-              ([.labels[]? | select(.name == "bug")] | length > 0) and
-              ((.comments | length) + ([.reactionGroups[]? | .users.totalCount] | add // 0)) >= 5 and
-              (.updatedAt >= "'$THREE_DAYS_AGO'")
-            ) |
-            "\(.number)|\(.title)"
-          ' > /tmp/candidate-issues.txt
-
-          ISSUE_COUNT=$(wc -l < /tmp/candidate-issues.txt | tr -d ' ')
-          echo "Found $ISSUE_COUNT candidate issues to evaluate"
-          cat /tmp/candidate-issues.txt
-
       - name: Create oncall triage prompt
         run: |
           mkdir -p /tmp/claude-prompts
-
-          # Read candidate issues into prompt
-          CANDIDATE_ISSUES=$(cat /tmp/candidate-issues.txt || echo "")
-
-          cat > /tmp/claude-prompts/oncall-triage-prompt.txt << EOF
+          cat > /tmp/claude-prompts/oncall-triage-prompt.txt << 'EOF'
           You're an oncall triage assistant for GitHub issues. Your task is to identify critical issues that require immediate oncall attention.
 
           Important: Don't post any comments or messages to the issues. Your only action should be to apply the "oncall" label to qualifying issues.
@@ -66,28 +32,32 @@ jobs:
           Repository: ${{ github.repository }}
 
           Task overview:
-          1. The following issues have already been filtered to meet these criteria:
-             - Have a "bug" label
-             - Updated within the last 3 days
-             - Have at least 5 engagements (comments + reactions)
+          1. Use mcp__github__list_issues to get open issues:
+             - Set state="open" to filter for open issues only
+             - The tool returns issues in pages - start with the first page
+             - You may need to paginate using the 'after' parameter if there are many issues
 
-          2. Create a TODO list with ALL of the candidate issues below. This ensures you process every single one:
+          2. Filter the issues to identify candidates that meet these mechanical criteria:
+             a) Have a "bug" label
+             b) Updated within the last 3 days (check updatedAt timestamp)
+             c) Have at least 5 engagements (count comments + reactions)
 
-          Candidate Issues (number|title):
-          $CANDIDATE_ISSUES
+          3. Create a TODO list with ALL candidate issues that meet the criteria above.
+             - List each issue by number in your TODO list
+             - This ensures you systematically evaluate every qualifying issue
 
-          3. For each issue in your TODO list, use the GitHub MCP tools to gather information:
-             - Issue details (title, body, labels) using mcp__github__get_issue
-             - All comments using mcp__github__get_issue_comments
+          4. For each issue in your TODO list, use GitHub MCP tools to analyze it:
+             - Issue details using mcp__github__get_issue (read title, body, labels)
+             - Comments using mcp__github__get_issue_comments
 
-          4. Evaluate each issue to determine if it meets the final blocking criterion:
+          5. Evaluate each issue to determine if it's truly blocking:
              - Read and understand the full issue content and comments to determine actual user impact
              - Don't simply do keyword matching - understand the context and severity
              - Consider severity indicators like: "crash", "stuck", "frozen", "hang", "unresponsive", "cannot use", "blocked", "broken"
              - Evaluate: Does this prevent core functionality from working? Can users work around it?
              - Be conservative - only flag issues that truly prevent users from getting work done with Claude Code
 
-          5. For issues that are truly blocking and do not already have the "oncall" label:
+          6. For issues that are truly blocking and do not already have the "oncall" label:
              - Use mcp__github__update_issue to add the "oncall" label
              - Do not post any comments
              - Do not remove any existing labels
@@ -95,12 +65,13 @@ jobs:
 
           Important guidelines:
           - Use the TODO list to track your progress through ALL candidate issues
+          - Process issues efficiently - don't read every single issue upfront, work through your TODO list systematically
           - Be conservative in your assessment - only flag truly critical blocking issues
           - Do not post any comments to issues
           - Your only action should be to add the "oncall" label using mcp__github__update_issue
           - Mark each issue as complete in your TODO list as you process it
 
-          6. After processing all issues in your TODO list, provide a summary of your actions:
+          7. After processing all issues in your TODO list, provide a summary of your actions:
              - List each issue number that received the "oncall" label
              - Include the issue title and a brief reason why it qualified
              - If no issues qualified, state that clearly
@@ -135,7 +106,7 @@ jobs:
         uses: anthropics/claude-code-base-action@beta
         with:
           prompt_file: /tmp/claude-prompts/oncall-triage-prompt.txt
-          allowed_tools: "mcp__github__get_issue,mcp__github__get_issue_comments,mcp__github__update_issue"
+          allowed_tools: "mcp__github__list_issues,mcp__github__get_issue,mcp__github__get_issue_comments,mcp__github__update_issue"
           timeout_minutes: "10"
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           mcp_config: /tmp/mcp-config/mcp-servers.json
