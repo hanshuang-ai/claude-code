@@ -35,13 +35,13 @@ jobs:
             --repo ${{ github.repository }} \
             --state open \
             --limit 5000 \
-            --json number,title,labels,updatedAt,comments,reactions \
+            --json number,title,labels,updatedAt,comments,reactionGroups \
             --search "updated:>=$THREE_DAYS_AGO" | \
           jq -r '
             .[] |
             select(
               ([.labels[]? | select(.name == "bug")] | length > 0) and
-              ((.comments | length) + ([.reactions[]? | .content] | length)) >= 5 and
+              ((.comments | length) + ([.reactionGroups[]? | .users.totalCount] | add // 0)) >= 5 and
               (.updatedAt >= "'$THREE_DAYS_AGO'")
             ) |
             "\(.number)|\(.title)"
